@@ -1,3 +1,7 @@
+"use strict";
+
+document.documentElement.classList.add("js");
+
 const CONFIG = {
   productName: "青木化粧水",
   introPrice: "2,980円（税込）",
@@ -11,8 +15,14 @@ const CONFIG = {
     form: { text: "本日中のお申し込みで初回特典適用", urgency: "本日23:59まで" }
   },
   checkoutUrl: "https://example.com/product/aoki-lotion",
+  mallUrls: {
+    rakuten: "https://example.com/shop/rakuten/aoki-lotion",
+    amazon: "https://example.com/shop/amazon/aoki-lotion",
+    yahoo: "https://example.com/shop/yahoo/aoki-lotion"
+  },
   scrollTargetId: "purchase-form"
 };
+
 const LEGAL_CONTENT = {
   tokusho: {
     title: "特定商取引法に基づく表記",
@@ -64,22 +74,43 @@ const LEGAL_CONTENT = {
     ]
   }
 };
-function bindSmoothScroll() {
-  document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
-    if (anchor.hasAttribute("data-cta") || anchor.hasAttribute("data-legal")) return;
 
-    anchor.addEventListener("click", (event) => {
-      const href = anchor.getAttribute("href");
-      if (!href || href === "#") return;
+/* ---------- ユーティリティ ---------- */
 
-      const target = document.querySelector(href);
-      if (!target) return;
-
-      event.preventDefault();
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-  });
+function isSp() {
+  return window.matchMedia("(max-width: 767px)").matches;
 }
+
+function createToastController() {
+  const toast = document.getElementById("externalToast");
+  if (!toast) return { show: () => {} };
+
+  let timerId = null;
+
+  function show() {
+    toast.hidden = false;
+    toast.classList.add("is-visible");
+    if (timerId) window.clearTimeout(timerId);
+    timerId = window.setTimeout(() => {
+      toast.classList.remove("is-visible");
+      toast.hidden = true;
+    }, 3000);
+  }
+
+  return { show };
+}
+
+function openCheckoutWithFallback(url) {
+  const nextTab = window.open("", "_blank");
+  if (nextTab) {
+    nextTab.opener = null;
+    nextTab.location.href = url;
+    return;
+  }
+  window.location.href = url;
+}
+
+/* ---------- 表示系 ---------- */
 
 function applyConfigText() {
   document.querySelectorAll("[data-config-text]").forEach((el) => {
@@ -88,8 +119,8 @@ function applyConfigText() {
     el.textContent = CONFIG[key];
   });
 
-  const floatingMain = document.querySelector(".sp-fixed-cta__main");
-  const floatingNote = document.querySelector(".sp-fixed-cta__note");
+  const floatingMain = document.querySelector(".floating-cta__main");
+  const floatingNote = document.querySelector(".floating-cta__note");
   if (floatingMain) floatingMain.textContent = `初回 ${CONFIG.introPrice.replace("（税込）", "")}`;
   if (floatingNote) floatingNote.textContent = `税込・${CONFIG.shippingText}`;
 }
@@ -99,10 +130,9 @@ function renderOfferBlocks() {
   if (!template) return;
 
   function resolveDeadlineKey(position) {
-    if (position === "top") return "header";
-    if (position === "header" || position === "mid" || position === "bottom" || position === "form") {
-      return position;
-    }
+    if (position === "top" || position === "header") return "header";
+    if (position === "top2") return "mid";
+    if (position === "mid" || position === "bottom" || position === "form") return position;
     return "header";
   }
 
@@ -142,38 +172,86 @@ function renderOfferBlocks() {
   });
 }
 
-function createToastController() {
-  const toast = document.getElementById("externalToast");
-  if (!toast) return { show: () => {} };
+/* 本日23:59へ向けたカウントダウン（毎日リセット＝販促LPの定番演出） */
+function startCountdown() {
+  const timers = document.querySelectorAll("[data-countdown]");
+  if (timers.length === 0) return;
 
-  let timerId = null;
+  const pad = (n) => String(n).padStart(2, "0");
 
-  function show() {
-    toast.hidden = false;
-    toast.classList.add("is-visible");
-    if (timerId) window.clearTimeout(timerId);
-    timerId = window.setTimeout(() => {
-      toast.classList.remove("is-visible");
-      toast.hidden = true;
-    }, 3000);
+  function tick() {
+    const now = new Date();
+    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    const diff = Math.max(0, end.getTime() - now.getTime());
+    const h = pad(Math.floor(diff / 3600000));
+    const m = pad(Math.floor((diff % 3600000) / 60000));
+    const s = pad(Math.floor((diff % 60000) / 1000));
+
+    timers.forEach((timer) => {
+      const hEl = timer.querySelector('[data-cd="h"]');
+      const mEl = timer.querySelector('[data-cd="m"]');
+      const sEl = timer.querySelector('[data-cd="s"]');
+      if (hEl) hEl.textContent = h;
+      if (mEl) mEl.textContent = m;
+      if (sEl) sEl.textContent = s;
+    });
   }
 
-  return { show };
+  tick();
+  window.setInterval(tick, 1000);
 }
 
-function openCheckoutWithFallback(url) {
-  const nextTab = window.open("", "_blank");
-  if (nextTab) {
-    nextTab.opener = null;
-    nextTab.location.href = url;
+/* スクロール出現 */
+function bindReveals() {
+  const targets = document.querySelectorAll(".rv");
+  if (targets.length === 0) return;
+
+  /* ?qa=1 は撮影QC用の一括表示スイッチ（遅延画像も即読み込み） */
+  const forceShow = new URLSearchParams(window.location.search).has("qa");
+  if (forceShow || !("IntersectionObserver" in window)) {
+    targets.forEach((el) => el.classList.add("is-in"));
+    if (forceShow) {
+      document.querySelectorAll('img[loading="lazy"]').forEach((img) => { img.loading = "eager"; });
+    }
     return;
   }
-  window.location.href = url;
+
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        entry.target.classList.add("is-in");
+        observer.unobserve(entry.target);
+      });
+    },
+    { threshold: 0.08, rootMargin: "0px 0px -6% 0px" }
+  );
+
+  targets.forEach((el) => observer.observe(el));
+}
+
+/* ---------- 導線系 ---------- */
+
+function bindSmoothScroll() {
+  document.querySelectorAll('a[href^="#"]').forEach((anchor) => {
+    if (anchor.hasAttribute("data-cta") || anchor.hasAttribute("data-legal") || anchor.hasAttribute("data-mall")) return;
+
+    anchor.addEventListener("click", (event) => {
+      const href = anchor.getAttribute("href");
+      if (!href || href === "#") return;
+
+      const target = document.querySelector(href);
+      if (!target) return;
+
+      event.preventDefault();
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
 }
 
 function bindExternalCheckoutCtas() {
   const toast = createToastController();
-  const scrollOnlyPositions = new Set(["header", "top"]);
+  const scrollOnlyPositions = new Set(["header", "top", "top2"]);
 
   function scrollToTarget() {
     const target = document.getElementById(CONFIG.scrollTargetId);
@@ -207,16 +285,97 @@ function bindExternalCheckoutCtas() {
 
       console.log("cta_click", { position, url: CONFIG.checkoutUrl });
       if (isScrollOnly) {
-        // 螟画峩轤ｹ: header/top縺ｯLP蜀・・雉ｼ蜈･蜑咲｢ｺ隱阪ヵ繧ｩ繝ｼ繝縺ｸ繧ｹ繧ｯ繝ｭ繝ｼ繝ｫ
         scrollToTarget();
         return;
       }
 
-      // 螟画峩轤ｹ: mid/bottom/floating/form縺ｯ螟夜ΚEC繧呈眠隕上ち繝悶〒髢九￥
       toast.show();
       openCheckoutWithFallback(CONFIG.checkoutUrl);
     });
   });
+}
+
+/* 楽天/Amazon/Yahoo! モール誘導ボタン */
+function bindMallButtons() {
+  const toast = createToastController();
+
+  document.querySelectorAll("[data-mall]").forEach((btn) => {
+    const mall = btn.dataset.mall || "unknown";
+    const url = CONFIG.mallUrls[mall] || CONFIG.checkoutUrl;
+
+    btn.setAttribute("href", url);
+    btn.setAttribute("target", "_blank");
+    btn.setAttribute("rel", "noopener noreferrer");
+
+    btn.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      console.log("mall_click", { mall, url });
+      toast.show();
+      openCheckoutWithFallback(url);
+    });
+  });
+}
+
+/* 追従CTA：FV通過後に表示、フォーム表示中は隠す */
+function bindFloatingCta() {
+  const bar = document.getElementById("floatingCta");
+  if (!bar) return;
+
+  const fv = document.querySelector(".fv");
+  const formSection = document.querySelector("[data-track-view='form']");
+
+  if (!("IntersectionObserver" in window)) {
+    bar.classList.add("is-shown");
+    return;
+  }
+
+  let pastFv = false;
+  let formVisible = false;
+  let formViewTracked = false;
+
+  function sync() {
+    if (pastFv && !formVisible) {
+      bar.classList.add("is-shown");
+      bar.classList.remove("is-hidden");
+    } else {
+      bar.classList.remove("is-shown");
+      bar.classList.add("is-hidden");
+    }
+  }
+
+  if (fv) {
+    new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        pastFv = !entry.isIntersecting;
+        sync();
+      },
+      { threshold: 0.05 }
+    ).observe(fv);
+  } else {
+    pastFv = true;
+  }
+
+  if (formSection) {
+    new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        formVisible = entry.isIntersecting;
+        if (formVisible && !formViewTracked) {
+          formViewTracked = true;
+          console.log("form_view");
+        }
+        sync();
+      },
+      { threshold: 0 }
+    ).observe(formSection);
+  }
+
+  sync();
 }
 
 function bindFaqTracking() {
@@ -227,6 +386,8 @@ function bindFaqTracking() {
     });
   });
 }
+
+/* ---------- モーダル ---------- */
 
 function createModalController(modal, closeSelector, onClose, options = {}) {
   if (!modal) return null;
@@ -360,7 +521,7 @@ function bindDemoIntroModal() {
     try {
       window.localStorage.setItem(key, value);
     } catch (_error) {
-      // localStorage荳榊庄迺ｰ蠅・〒繧ゅΔ繝ｼ繝繝ｫ閾ｪ菴薙・蜍穂ｽ懊＆縺帙ｋ
+      /* localStorage不可環境でもモーダル自体は動作させる */
     }
   }
 
@@ -377,20 +538,16 @@ function bindDemoIntroModal() {
   demoController.open(".demo-intro-modal__dialog");
 }
 
+/* ---------- 購入前確認フォーム ---------- */
+
 function bindOrderFormUi() {
   const form = document.getElementById("orderForm");
   const stepNextBtn = document.getElementById("stepNextBtn");
   const stepBackBtn = document.getElementById("stepBackBtn");
   const formNotice = document.getElementById("formNotice");
   const toast = createToastController();
-  const floatingCta = document.querySelector(".sp-fixed-cta");
-  const formSection = document.querySelector("[data-track-view='form']");
 
   if (!form) return;
-
-  function isSp() {
-    return window.matchMedia("(max-width: 768px)").matches;
-  }
 
   function goToStep2() {
     if (!isSp()) return;
@@ -435,7 +592,7 @@ function bindOrderFormUi() {
     if (termsError) termsError.textContent = "";
     if (formNotice) {
       formNotice.hidden = true;
-      formNotice.textContent = "\u5165\u529b\u5185\u5bb9\u3092\u78ba\u8a8d\u3057\u3066\u304f\u3060\u3055\u3044";
+      formNotice.textContent = "入力内容を確認してください";
     }
   }
 
@@ -450,43 +607,23 @@ function bindOrderFormUi() {
     const address = getTrimmedValue("address");
 
     if (name && name.length < 2) {
-      errors.push({
-        fieldId: "name",
-        errorId: "nameError",
-        message: "\u304a\u540d\u524d\u306f2\u6587\u5b57\u4ee5\u4e0a\u3067\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044\u3002"
-      });
+      errors.push({ fieldId: "name", errorId: "nameError", message: "お名前は2文字以上で入力してください。" });
     }
 
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      errors.push({
-        fieldId: "email",
-        errorId: "emailError",
-        message: "\u30e1\u30fc\u30eb\u30a2\u30c9\u30ec\u30b9\u306e\u5f62\u5f0f\u304c\u6b63\u3057\u304f\u3042\u308a\u307e\u305b\u3093\u3002"
-      });
+      errors.push({ fieldId: "email", errorId: "emailError", message: "メールアドレスの形式が正しくありません。" });
     }
 
     if (tel && !/^[0-9+\-()\s]{9,15}$/.test(tel)) {
-      errors.push({
-        fieldId: "tel",
-        errorId: "telError",
-        message: "\u96fb\u8a71\u756a\u53f7\u306e\u5f62\u5f0f\u304c\u6b63\u3057\u304f\u3042\u308a\u307e\u305b\u3093\u3002"
-      });
+      errors.push({ fieldId: "tel", errorId: "telError", message: "電話番号の形式が正しくありません。" });
     }
 
     if (zip && !/^\d{3}-?\d{4}$/.test(zip)) {
-      errors.push({
-        fieldId: "zip",
-        errorId: "zipError",
-        message: "\u90f5\u4fbf\u756a\u53f7\u306f\u300c123-4567\u300d\u5f62\u5f0f\u3067\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044\u3002"
-      });
+      errors.push({ fieldId: "zip", errorId: "zipError", message: "郵便番号は「123-4567」形式で入力してください。" });
     }
 
     if (address && address.length < 5) {
-      errors.push({
-        fieldId: "address",
-        errorId: "addressError",
-        message: "\u4f4f\u6240\u306f5\u6587\u5b57\u4ee5\u4e0a\u3067\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044\u3002"
-      });
+      errors.push({ fieldId: "address", errorId: "addressError", message: "住所は5文字以上で入力してください。" });
     }
 
     errors.forEach(({ fieldId, errorId, message }) => setFieldError(fieldId, errorId, message));
@@ -494,8 +631,7 @@ function bindOrderFormUi() {
     if (errors.length > 0) {
       if (formNotice) {
         formNotice.hidden = false;
-        formNotice.textContent =
-          "\u5165\u529b\u5185\u5bb9\u306b\u8aa4\u308a\u304c\u3042\u308a\u307e\u3059\u3002\u672a\u5165\u529b\u306e\u307e\u307e\u9032\u3080\u3053\u3068\u3082\u53ef\u80fd\u3067\u3059\u3002";
+        formNotice.textContent = "入力内容に誤りがあります。未入力のまま進むことも可能です。";
       }
       return false;
     }
@@ -529,44 +665,19 @@ function bindOrderFormUi() {
       openCheckoutWithFallback(CONFIG.checkoutUrl);
     });
   });
-
-  if (!floatingCta || !formSection || !("IntersectionObserver" in window)) return;
-
-  let isFormVisible = false;
-  let formViewTracked = false;
-
-  function syncFloatingCtaState() {
-    if (isSp() && isFormVisible) {
-      floatingCta.classList.add("is-hidden");
-      return;
-    }
-    floatingCta.classList.remove("is-hidden");
-  }
-
-  const observer = new IntersectionObserver(
-    (entries) => {
-      const entry = entries[0];
-      if (!entry) return;
-
-      isFormVisible = entry.isIntersecting;
-      if (!formViewTracked && entry.isIntersecting) {
-        formViewTracked = true;
-        console.log("form_view");
-      }
-      syncFloatingCtaState();
-    },
-    { threshold: 0 }
-  );
-
-  observer.observe(formSection);
-  window.addEventListener("resize", syncFloatingCtaState, { passive: true });
 }
+
+/* ---------- 初期化 ---------- */
+
 applyConfigText();
 renderOfferBlocks();
+startCountdown();
+bindReveals();
 bindSmoothScroll();
 bindExternalCheckoutCtas();
+bindMallButtons();
+bindFloatingCta();
 bindFaqTracking();
 bindLegalModal();
 bindDemoIntroModal();
 bindOrderFormUi();
-

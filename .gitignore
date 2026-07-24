@@ -1,0 +1,6 @@
+_notes/
+_shots/
+node_modules/
+CHATGPT_PROMPTS.md
+image-prompts.md
+*.bak
